@@ -1,0 +1,4 @@
+@echo off
+cd /d "%~dp0"
+"C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" mishkinamish.vcxproj -p:Configuration=Release -p:Platform=x64 -t:Rebuild
+pause
