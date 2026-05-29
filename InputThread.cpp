@@ -94,21 +94,40 @@ unsigned __stdcall WaveInThread(void* p) {
 }
 
 int InputThread::Start(UINT device_num, HWND hdwnd) {
-  if (!hEvent) {
-    hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-  }
-
-  if (!input_thread_handle) {
-    input_thread_handle = _beginthreadex(NULL, 0, WaveInThread, 0, 0, NULL);
-  }
-
+  // Clean up any existing device
   if (audio_client) {
     CleanUpDevice(hdwnd);
   }
 
   flag_keep_silence = true;
 
-  return OpenDevice(device_num, hdwnd);
+  // Create event if needed
+  if (!hEvent) {
+    hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!hEvent) {
+      return 1;
+    }
+  }
+
+  int result = OpenDevice(device_num, hdwnd);
+  if (result != 0) {
+    // Don't close hEvent — the thread (if already running) may be waiting on it,
+    // or we may reuse it on a future retry.
+    return result;
+  }
+
+  // Create thread if needed
+  if (!input_thread_handle) {
+    input_thread_handle = _beginthreadex(NULL, 0, WaveInThread, 0, 0, NULL);
+    if (!input_thread_handle) {
+      CloseHandle(hEvent);
+      hEvent = NULL;
+      CleanUpDevice(hdwnd);
+      return 1;
+    }
+  }
+
+  return 0;
 }
 
 int InputThread::OpenDevice(UINT device_num, HWND hdwnd) {
@@ -349,6 +368,7 @@ void InputThread::OnSoundData() {
     hr = capture_client->GetNextPacketSize(&num_frames_available);
     if (FAILED(hr)) break;
   }
+
 }
 
 void InputThread::CleanUpDevice(HWND hdwnd) {

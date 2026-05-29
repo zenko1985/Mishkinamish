@@ -26,9 +26,9 @@ void ClickSound::Init() {
   for (i = 0; i < 2; i++) {
     for (j = 0; j < MM_CLICK_SAMPLES; j++) {
       samples[i][j] =
-          10000 * (1 + cos(-PI + 2 * PI / MM_CLICK_SAMPLES * j))
+          (short)(10000 * (1 + cos(-PI + 2 * PI / MM_CLICK_SAMPLES * j))
           * sin((freq[i] + freq[i] * 0.5 * j / MM_CLICK_SAMPLES) * 205.0
-                / 16000.0 * (2.0 * PI / MM_CLICK_SAMPLES * j));
+                / 16000.0 * (2.0 * PI / MM_CLICK_SAMPLES * j)));
     }
   }
 

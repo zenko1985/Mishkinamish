@@ -51,6 +51,7 @@ class MModel {
   void DumpC();  // Временно
 
   void LoadTestData();  // Для отладки
+  void InitSilence();   // Ленивое вычисление MFCC тишины
   float global_min_max_values[13]
                              [2];  // min и max агрегированные для всех звуков
   float min_max_values[MM_Model_Num_Persons][MM_Model_Num_Sounds]

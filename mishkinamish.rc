@@ -200,7 +200,13 @@ IDB_BITMAP_DOWN         BITMAP                  "arrow-down.bmp"
 
 IDB_BITMAP_RIGHT        BITMAP                  "arrow-right.bmp"
 
-
+// IPP DLLs embedded as resources
+IDR_IPPS_DLL            RCDATA                  "ipp_dlls\\ipps.dll"
+IDR_IPPCORE_DLL         RCDATA                  "ipp_dlls\\ippcore.dll"
+IDR_IPPSD1_DLL          RCDATA                  "ipp_dlls\\ippsd1.dll"
+IDR_IPPSK0_DLL          RCDATA                  "ipp_dlls\\ippsk0.dll"
+IDR_IPPSL9_DLL          RCDATA                  "ipp_dlls\\ippsl9.dll"
+IDR_IPPSY8_DLL          RCDATA                  "ipp_dlls\\ippsy8.dll"
 
 
 

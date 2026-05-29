@@ -17,6 +17,7 @@ extern volatile bool flag_wav_dump;  // [29-DEC]
 extern volatile bool flag_training_mode;
 extern volatile long training_frame_counter;
 int volatile WorkerThread::training_silence_indicator;
+bool volatile WorkerThread::flag_sound_detection_enabled = false;
 
 static volatile bool flag_ShutDownWorkerThread =
     false;  // флаг информирует поток о том, что нужно выключиться
@@ -234,10 +235,13 @@ void WorkerThread::Work() {
     training_frame_counter++;
   }
 
-  // 3.2. Отфильтровывание коротких звуков ("К" и "Ч") [18-DEC]
+  // 3.2. Не вызывать WhichSound если уровень сигнала слишком низкий (индикатор 0 = тишина)
+  flag_sound_detection_enabled = (indicator_value >= 1);
+
+  // 3.3. Отфильтровывание коротких звуков ("К" и "Ч") [18-DEC]
   KChFstate::NewFrame(indicator_value);
 
-  // 3.3. Дамп в файл
+  // 3.4. Дамп в файл
   if (flag_wav_dump)
     flag_wav_dump =
         MMWAVDump::DumpBuffer(input_buf, sizeof(input_buf));  // [29-DEC]

@@ -40,19 +40,36 @@ unsigned __stdcall WaveOutThread(void* p) {
 }
 
 int OutputThread::Start(HWND hdwnd) {
-  if (!hEvent) {
-    hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-  }
-
-  if (!output_thread_handle) {
-    output_thread_handle = _beginthreadex(NULL, 0, WaveOutThread, 0, 0, NULL);
-  }
-
+  // Clean up any existing device
   if (audio_client) {
     CleanUpDevice(hdwnd);
   }
 
-  return OpenDevice(hdwnd);
+  // Create event if needed
+  if (!hEvent) {
+    hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if (!hEvent) {
+      return 1;
+    }
+  }
+
+  int result = OpenDevice(hdwnd);
+  if (result != 0) {
+    return result;
+  }
+
+  // Create thread if needed
+  if (!output_thread_handle) {
+    output_thread_handle = _beginthreadex(NULL, 0, WaveOutThread, 0, 0, NULL);
+    if (!output_thread_handle) {
+      CloseHandle(hEvent);
+      hEvent = NULL;
+      CleanUpDevice(hdwnd);
+      return 1;
+    }
+  }
+
+  return 0;
 }
 
 int OutputThread::OpenDevice(HWND hdwnd) {

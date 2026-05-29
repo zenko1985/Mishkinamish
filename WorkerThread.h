@@ -20,7 +20,8 @@ class WorkerThread {
       indicator_value;  // принимает значение от 0 до 5 в зависимости от уровния
                         // сигнала, выводится индикатором
   static volatile int training_silence_indicator;  // какой была мощность в
-                                                   // паузе перед тренировкой?
+                                                    // паузе перед тренировкой?
+  static volatile bool flag_sound_detection_enabled;
  protected:
   static uintptr_t worker_thread_handle;
 

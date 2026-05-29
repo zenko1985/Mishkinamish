@@ -7,6 +7,7 @@
 #include "OutputThread.h"
 #include "WAVDump.h"
 #include "WorkerThread.h"
+#include "IPPEmbed.h"
 #include "resource.h"
 
 extern MModel model;
@@ -680,7 +681,13 @@ static BOOL CALLBACK DlgWndProc(HWND hdwnd,
       // Sleep(1000);
       WorkerThread::Start();
       // Sleep(1000);
-      InputThread::Start(0, hdwnd);
+      if (InputThread::Start(0, hdwnd) != 0) {
+#ifdef MMISH_ENGLISH
+        SetWindowTextA(hdwnd, "Failed to open audio input device!");
+#else
+        SetWindowTextA(hdwnd, "Не удалось открыть устройство ввода звука!");
+#endif
+      }
 
       // 4. Включаем таймер #1 для индикаторов
       SetTimer(hdwnd, 1, 100, NULL);  // 10 раз в секунду
@@ -741,12 +748,14 @@ static BOOL CALLBACK DlgWndProc(HWND hdwnd,
             // MessageBox(hdwnd,L"Выбрали другой микрофон!",L"Выбрали другой
             // микрофон",MB_OK); Открываем выбранное устройство
             current_device_num =
-                SendDlgItemMessage(hdwnd,
+                (int)SendDlgItemMessage(hdwnd,
                                    IDC_COMBO_MIC,
                                    CB_GETCURSEL,
                                    0,
                                    0L);  // Кто теперь царь горы?
-            InputThread::Start(current_device_num, hdwnd);
+            if (InputThread::Start(current_device_num, hdwnd) != 0) {
+              SetWindowTextA(hdwnd, "Не удалось открыть устройство ввода звука!");
+            }
             return 1;
           } else
             return 0;
@@ -1034,6 +1043,51 @@ static BOOL CALLBACK DlgWndProc(HWND hdwnd,
 }
 
 //=======================================================================
+// Извлечение IPP DLL из ресурсов
+//=======================================================================
+static void ExtractIPPDLLs() {
+  wchar_t exePath[MAX_PATH];
+  GetModuleFileNameW(NULL, exePath, MAX_PATH);
+  wchar_t *p = wcsrchr(exePath, L'\\');
+  if (p) *p = L'\0';
+
+  struct DLLRes { int id; const wchar_t* name; };
+  static const DLLRes dlls[] = {
+    {IDR_IPPS_DLL,    L"ipps.dll"},
+    {IDR_IPPCORE_DLL, L"ippcore.dll"},
+    {IDR_IPPSD1_DLL,  L"ippsd1.dll"},
+    {IDR_IPPSK0_DLL,  L"ippsk0.dll"},
+    {IDR_IPPSL9_DLL,  L"ippsl9.dll"},
+    {IDR_IPPSY8_DLL,  L"ippsy8.dll"},
+  };
+
+  for (int i = 0; i < 6; i++) {
+    wchar_t dllPath[MAX_PATH];
+    wsprintfW(dllPath, L"%s\\%s", exePath, dlls[i].name);
+
+    // Always overwrite to ensure DLLs match the EXE
+    HRSRC hRes = FindResourceW(GZInst, MAKEINTRESOURCE(dlls[i].id), RT_RCDATA);
+    if (!hRes) { MessageBoxW(NULL, L"FindResource failed", L"Error", MB_OK); continue; }
+    HGLOBAL hMem = LoadResource(GZInst, hRes);
+    if (!hMem) { MessageBoxW(NULL, L"LoadResource failed", L"Error", MB_OK); continue; }
+    DWORD sz = SizeofResource(GZInst, hRes);
+    void *data = LockResource(hMem);
+
+    HANDLE hFile = CreateFileW(dllPath, GENERIC_WRITE, 0, NULL,
+                                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) { MessageBoxW(NULL, L"CreateFile failed", L"Error", MB_OK); continue; }
+    DWORD written;
+    WriteFile(hFile, data, sz, &written, NULL);
+    FlushFileBuffers(hFile);
+    CloseHandle(hFile);
+  }
+
+  // Don't pre-load IPP DLLs — let delay-load + SEH in CopyShmopy::Init()
+  // handle dispatch init crashes gracefully.
+  (void)0;
+}
+
+//=======================================================================
 // программа
 //=======================================================================
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cline, INT)
@@ -1042,6 +1096,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cline, INT)
   HRESULT hrCoInit = CoInitializeEx(NULL, COINIT_MULTITHREADED);
   static MSG msg;  // Сообщение
   GZInst = hInst;
+
+  InitIPPEmbedding();
 
 #ifdef MM_SUPERUSER
   SUWindow();  // Это не для всех
@@ -1071,6 +1127,13 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR cline, INT)
       CB_SETCURSEL,
       current_device_num,
       0L);
+  }
+
+  // Инициализация DSP и вычисление MFCC тишины
+  __try {
+    model.InitSilence();
+  } __except(EXCEPTION_EXECUTE_HANDLER) {
+    // IPP init crashed; will retry in worker thread via CopyShmopy::Init()
   }
 
   // При необходимости напечатать восклицательные знаки

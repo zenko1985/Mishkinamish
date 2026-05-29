@@ -1,4 +1,4 @@
-﻿#include <Windows.h>
+#include <Windows.h>
 
 #include <gl/GL.h>
 #include <stdio.h>
@@ -23,14 +23,23 @@ MModel::MModel()
   // А вот это - надолго
   InitializeCriticalSection(&belongs_to_me);
 
-  // [22-DEC]
-  // hplane[6][0] вычислим в конструкторе модели. Этот элемент не меняется.
-  // По крайней мере, если мы не меняем алгоритм вычисления MFCC
-  // Берём MEL-спектр тишины (40 нулей) и вычисляем его кепстр
+  // hplane[6][0] — silence MFCC — будет вычислено позже, при первом обращении
+  hplane[6][0].defined = false;
+}
+
+void MModel::InitSilence() {
+  if (hplane[6][0].defined) return;
   float buf_cas_mel[40] = {0};
-  CopyShmopy::Init();
-  CopyShmopy::CS_mel_cep(buf_cas_mel, (float *)(&hplane[6][0].base_point));
-  hplane[6][0].defined = true;
+  for (int retry = 3; retry--;) {
+    __try {
+      CopyShmopy::Init();
+      CopyShmopy::CS_mel_cep(buf_cas_mel, (float *)(&hplane[6][0].base_point));
+      hplane[6][0].defined = true;
+      return;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      // IPP dispatch init crashed; retry
+    }
+  }
 }
 
 MModel::~MModel() {
@@ -66,7 +75,7 @@ float MModel::ClaculateBasePoint(int from, int to) {
   GZSListable<mfcc_t> *p_sm;
   float t, t1 = -1e10f, t2 = 1e10f, result, numerator, denumerator, A, B, D;
   mfcc_t *mc;  // Для удобства дальнейших записей
-  float sigma_kvadrat, sigma_kvadrat_ref;
+  float sigma_kvadrat;
 
   // 1. Для начала переберём все точки звука 'from' и найдём t1
   p_sm = snd_matrix[0][from][0].first;
@@ -705,7 +714,7 @@ wchar_t *MModel::Load(HWND hdwnd, wchar_t *_filename) {
         sizeof(current_device_num),
         1,
         fin);  // какое устройство выбрать
-  if (current_device_num >= iNumDevs) current_device_num = 0;
+  if ((unsigned long)current_device_num >= iNumDevs) current_device_num = 0;
 
   if (version >= 2)  // с [28-DEC] добавился флаг flag_kc_anytime
   {
@@ -791,94 +800,94 @@ void MModel::DumpC() {
 //================================================================================
 // тестовые данные, пока не реализовал загрузку файла конфигурации
 //================================================================================
-mfcc_t mfcc[7] = {{13.248,
-                   -0.472,
-                   -0.603,
-                   1.940,
-                   -1.125,
-                   -0.662,
-                   -0.022,
-                   -0.150,
-                   -0.355,
-                   -0.589,
+mfcc_t mfcc[7] = {{13.248f,
+                   -0.472f,
+                   -0.603f,
+                   1.940f,
+                   -1.125f,
+                   -0.662f,
+                   -0.022f,
+                   -0.150f,
+                   -0.355f,
+                   -0.589f,
                    0,
                    0,
                    0},
-                  {12.603,
-                   0.456,
-                   -0.757,
-                   2.509,
-                   -1.889,
-                   -0.739,
-                   -0.139,
-                   0.076,
-                   -0.463,
-                   -0.919,
+                  {12.603f,
+                   0.456f,
+                   -0.757f,
+                   2.509f,
+                   -1.889f,
+                   -0.739f,
+                   -0.139f,
+                   0.076f,
+                   -0.463f,
+                   -0.919f,
                    0,
                    0,
                    0},
-                  {14.504,
-                   -0.050,
-                   -0.651,
-                   1.718,
-                   -1.307,
-                   -0.699,
-                   -0.263,
-                   -0.180,
-                   -0.490,
-                   -0.718,
+                  {14.504f,
+                   -0.050f,
+                   -0.651f,
+                   1.718f,
+                   -1.307f,
+                   -0.699f,
+                   -0.263f,
+                   -0.180f,
+                   -0.490f,
+                   -0.718f,
                    0,
                    0,
                    0},
-                  {14.625,
-                   0.087,
-                   -0.753,
-                   1.892,
-                   -1.773,
-                   -0.589,
-                   -0.271,
-                   0.027,
-                   -0.564,
-                   -0.839,
+                  {14.625f,
+                   0.087f,
+                   -0.753f,
+                   1.892f,
+                   -1.773f,
+                   -0.589f,
+                   -0.271f,
+                   0.027f,
+                   -0.564f,
+                   -0.839f,
                    0,
                    0,
                    0},
-                  {15.036,
-                   0.038,
-                   -0.806,
-                   1.695,
-                   -1.583,
-                   -0.496,
-                   -0.309,
-                   -0.092,
-                   -0.581,
-                   -0.787,
+                  {15.036f,
+                   0.038f,
+                   -0.806f,
+                   1.695f,
+                   -1.583f,
+                   -0.496f,
+                   -0.309f,
+                   -0.092f,
+                   -0.581f,
+                   -0.787f,
                    0,
                    0,
                    0},
-                  {14.870,
-                   0.336,
-                   -1.097,
-                   1.959,
-                   -1.857,
-                   -0.322,
-                   -0.344,
-                   0.053,
-                   -0.727,
-                   -0.815,
+                  {14.870f,
+                   0.336f,
+                   -1.097f,
+                   1.959f,
+                   -1.857f,
+                   -0.322f,
+                   -0.344f,
+                   0.053f,
+                   -0.727f,
+                   -0.815f,
                    0,
                    0,
                    0},
-                  {15.492,
-                   0.038,
-                   -0.827,
-                   1.693,
-                   -1.577,
-                   -0.517,
-                   -0.320,
-                   -0.076,
-                   -0.662,
-                   -0.734,
+                  {15.492f,
+                   0.038f,
+                   -0.827f,
+                   1.693f,
+                   -1.577f,
+                   -0.517f,
+                   -0.320f,
+                   -0.076f,
+                   -0.662f,
+                   -0.734f,
                    0,
                    0,
                    0}};

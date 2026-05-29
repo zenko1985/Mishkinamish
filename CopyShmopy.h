@@ -3,8 +3,8 @@
 
 class CopyShmopy {
  public:
+  __declspec(noinline) static void Init();
   static void Process(short *dest, short *src);
-  static void Init();
   static void Halt();
   static void CS_mel_cep(float *mfspec, float *mfcep);
 

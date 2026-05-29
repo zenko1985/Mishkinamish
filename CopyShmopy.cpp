@@ -63,6 +63,76 @@ static IppsDCTFwdSpec_32f *ppDCTSpec = 0;  // Бред какой-то с DCT
 static Ipp8u *pDCTInitBuf, *pDCTWorkBuf, *pDCTSpec;
 
 bool CopyShmopy::initialized = false;
+static bool flag_ipp_broken = false;  // IPP dispatch crashed; use fallback FFT/DCT
+
+//-----------------------------------------------------------------------------
+// Fallback 512-point real FFT (power spectrum) when IPP dispatch is broken
+//-----------------------------------------------------------------------------
+static void fallback_fft_power(float *input, float *power_out) {
+  const int n = DFT_SIZE;
+  float re[DFT_SIZE];
+  float im[DFT_SIZE];
+
+  for (int i = 0; i < n; i++) {
+    re[i] = input[i];
+    im[i] = 0.0f;
+  }
+
+  // Bit-reversal permutation
+  for (int i = 1, j = 0; i < n; i++) {
+    int bit = n >> 1;
+    for (; j & bit; bit >>= 1)
+      j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      float t = re[i]; re[i] = re[j]; re[j] = t;
+      t = im[i]; im[i] = im[j]; im[j] = t;
+    }
+  }
+
+  // Cooley-Tukey iterative FFT (radix-2)
+  for (int len = 2; len <= n; len <<= 1) {
+    float w_angle = -2.0f * 3.141592653589793f / len;
+    float w_re = cosf(w_angle);
+    float w_im = sinf(w_angle);
+    for (int i = 0; i < n; i += len) {
+      float wr = 1.0f, wi = 0.0f;
+      int half = len >> 1;
+      for (int j = 0; j < half; j++) {
+        int i1 = i + j;
+        int i2 = i + j + half;
+        float tr = wr * re[i2] - wi * im[i2];
+        float ti = wr * im[i2] + wi * re[i2];
+        re[i2] = re[i1] - tr;
+        im[i2] = im[i1] - ti;
+        re[i1] += tr;
+        im[i1] += ti;
+        float nwr = wr * w_re - wi * w_im;
+        wi = wr * w_im + wi * w_re;
+        wr = nwr;
+      }
+    }
+  }
+
+  // Power spectrum |X[k]|^2 for k=0..n/2
+  for (int k = 0; k <= n / 2; k++)
+    power_out[k] = re[k] * re[k] + im[k] * im[k];
+}
+
+//-----------------------------------------------------------------------------
+// Fallback DCT-II when IPP dispatch is broken
+//-----------------------------------------------------------------------------
+static void fallback_dct(float *data, int n) {
+  float tmp[40];
+  float pi_n = 3.141592653589793f / n;
+  for (int k = 0; k < n; k++) {
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++)
+      sum += data[i] * cosf(pi_n * (i + 0.5f) * k);
+    tmp[k] = sum;
+  }
+  memcpy(data, tmp, n * sizeof(float));
+}
 
 //-------------------------------------------------------------------------------------------------
 // Тута чиста посмотреть на этот ваш пре-эмфасис
@@ -131,8 +201,8 @@ void CopyShmopy::Process(short *dest, short *src) {
     // Ещё добавим окно Хемминга!!!
     for (i = 0; i < MM_SOUND_BUFFER_LEN; i++)
       buf_in[i] *=
-          (0.53836
-           - 0.46164 * cos(2 * 3.14159 * i / (MM_SOUND_BUFFER_LEN - 1)));
+          (0.53836f
+           - 0.46164f * cosf(2 * 3.14159f * i / (MM_SOUND_BUFFER_LEN - 1)));
 
     // Один из двух вариантов должен быть закомментирован
     // Вариант 1 - сдвинуть спектр (для баловства) и вычислить MFCC (для дела)
@@ -190,7 +260,7 @@ void CopyShmopy::IntegrateMagic160(float *magic_data, short *dest) {
   if (output_offset >= MM_SOUND_BUFFER_LEN) {
     // !!! Здесь округление переделать !!!
     for (i = 0; i < MM_SOUND_BUFFER_LEN; i++) {
-      dest[i] = OutputDoubleBuffer[i] / (Ipp32f)DFT_SIZE;
+      dest[i] = (short)(OutputDoubleBuffer[i] / (Ipp32f)DFT_SIZE);
     }
 
     // Сдвигаем вторую половину буфера в первую часть, смещение тоже
@@ -216,18 +286,29 @@ float *CopyShmopy::DoMagic(float *input_data, bool remember_master_mfcc) {
   int i, k;
   IppStatus ippstatus;
 
-  // 0. Проверка инициализации библиотеки Intel PPM
-  if (!initialized) Init();
+  // 0. Проверка инициализации библиотеки Intel IPP
+  if (!initialized && !flag_ipp_broken) {
+    Init();
+    if (initialized) model.InitSilence();
+  }
 
-  // 1. Отфурьируем
-  ippstatus = ippsDFTFwd_RToCCS_32f(
-      input_data, buf_out_balovstvo, pDFTSpec, pDFTWorkBuf);
+  // 0.5. Если IPP сломан — используем софтварный FFT
+  if (flag_ipp_broken) {
+    fallback_fft_power(input_data, buf_out_mfcc);
+  } else if (initialized) {
+    // 1. Отфурьируем через IPP
+    ippstatus = ippsDFTFwd_RToCCS_32f(
+        input_data, buf_out_balovstvo, pDFTSpec, pDFTWorkBuf);
 
-  // 2. Получим Power Spectrum
-  for (i = 0; i <= DFT_SIZE / 2; i++)
-    buf_out_mfcc[i] =
-        buf_out_balovstvo[i * 2] * buf_out_balovstvo[i * 2]
-        + buf_out_balovstvo[i * 2 + 1] * buf_out_balovstvo[i * 2 + 1];
+    // 2. Получим Power Spectrum
+    for (i = 0; i <= DFT_SIZE / 2; i++)
+      buf_out_mfcc[i] =
+          buf_out_balovstvo[i * 2] * buf_out_balovstvo[i * 2]
+          + buf_out_balovstvo[i * 2 + 1] * buf_out_balovstvo[i * 2 + 1];
+  } else {
+    // Ни IPP, ни fallback — нечего вычислять
+    return input_data;
+  }
 
   // 3. MEL-спектр!!!
   cas_mel_spec(buf_cas_MEL, buf_out_mfcc);
@@ -291,7 +372,7 @@ float *CopyShmopy::DoMagic(float *input_data, bool remember_master_mfcc) {
         }
       }
     }
-  } else  // Проверка на попадание
+  } else if (WorkerThread::flag_sound_detection_enabled)  // Проверка на попадание (только при достаточном уровне)
   {
     // i=model.WhichSound((mfcc_t *)buf_cas_cep);
     i = model.WhichSound(
@@ -312,6 +393,9 @@ float *CopyShmopy::DoMagic(float *input_data, bool remember_master_mfcc) {
       g_add_mouse_speed -= 5;
       if (g_add_mouse_speed < 0) g_add_mouse_speed = 0;
     }
+  } else {
+    g_add_mouse_speed -= 5;
+    if (g_add_mouse_speed < 0) g_add_mouse_speed = 0;
   }
 
   // 5. Накапливаем 7 отсчетов в буфере №1
@@ -385,54 +469,61 @@ pDFTWorkBuf);
 // Готовимся делать прямое и обратное преобразование Фурье с буфером 512
 //====================================================================================================
 void CopyShmopy::Init() {
-  if (initialized) return;
+  if (initialized || flag_ipp_broken) return;
 
-  // 1. Инициализируем библиотеку Intel IPP и сфинкса
-  ippInit();
-  // cas_init(); RIP
+  __try {
+    // 1. Скока вешать в граммах?
+    int sizeDFTSpec, sizeDFTInitBuf, sizeDFTWorkBuf;
+    ippsDFTGetSize_R_32f(DFT_SIZE,
+                          IPP_FFT_NODIV_BY_ANY,
+                          ippAlgHintAccurate,
+                          &sizeDFTSpec,
+                          &sizeDFTInitBuf,
+                          &sizeDFTWorkBuf);
 
-  // 2. Скока вешать в граммах?
-  int sizeDFTSpec, sizeDFTInitBuf, sizeDFTWorkBuf;
-  ippsDFTGetSize_C_32fc(DFT_SIZE,
-                        IPP_FFT_NODIV_BY_ANY,
-                        ippAlgHintAccurate,
-                        &sizeDFTSpec,
-                        &sizeDFTInitBuf,
-                        &sizeDFTWorkBuf);
+    // Отвешиваем
+    pDFTSpec = (IppsDFTSpec_R_32f *)ippsMalloc_8u(sizeDFTSpec);
+    pDFTInitBuf = ippsMalloc_8u(sizeDFTInitBuf);
+    pDFTWorkBuf = ippsMalloc_8u(sizeDFTWorkBuf);
 
-  // Отвешиваем
-  pDFTSpec = (IppsDFTSpec_R_32f *)ippsMalloc_8u(sizeDFTSpec);
-  pDFTInitBuf = ippsMalloc_8u(sizeDFTInitBuf);
-  pDFTWorkBuf = ippsMalloc_8u(sizeDFTWorkBuf);
+    // 3. Инициализация
+    ippsDFTInit_R_32f(DFT_SIZE, IPP_FFT_NODIV_BY_ANY, ippAlgHintNone,
+                       pDFTSpec, pDFTInitBuf);
+    if (pDFTInitBuf) ippFree(pDFTInitBuf);
 
-  // 3. Инициализация
-  ippsDFTInit_R_32f(
-      DFT_SIZE, IPP_FFT_NODIV_BY_ANY, ippAlgHintNone, pDFTSpec, pDFTInitBuf);
-  if (pDFTInitBuf)
-    ippFree(pDFTInitBuf);  // Этот уже сразу после инициализации не нужен
+    // 4. Аналогично для DCT
+    int sizeDCTSpec, sizeDCTInitBuf, sizeDCTWorkBuf;
+    ippsDCTFwdGetSize_32f(MEL_NUM_FILTERS, ippAlgHintNone,
+                          &sizeDCTSpec, &sizeDCTInitBuf, &sizeDCTWorkBuf);
 
-  // 4. Аналогично для DCT
-  int sizeDCTSpec, sizeDCTInitBuf, sizeDCTWorkBuf;
-  ippsDCTFwdGetSize_32f(MEL_NUM_FILTERS,
-                        ippAlgHintNone,
-                        &sizeDCTSpec,
-                        &sizeDCTInitBuf,
-                        &sizeDCTWorkBuf);
+    pDCTSpec = ippsMalloc_8u(sizeDCTSpec);
+    pDCTInitBuf = ippsMalloc_8u(sizeDCTInitBuf);
+    pDCTWorkBuf = ippsMalloc_8u(sizeDCTWorkBuf);
 
-  // Отвешиваем
-  pDCTSpec = ippsMalloc_8u(sizeDCTSpec);
-  pDCTInitBuf = ippsMalloc_8u(
-      sizeDCTInitBuf);  // Чушь какая-то. sizeDCTInitBuf возвращает ноль
-  pDCTWorkBuf = ippsMalloc_8u(sizeDCTWorkBuf);
+    ippsDCTFwdInit_32f(&ppDCTSpec, MEL_NUM_FILTERS, ippAlgHintNone,
+                        pDCTSpec, pDCTWorkBuf);
+    if (pDCTInitBuf) ippFree(pDCTInitBuf);
 
-  // Инициализация DCT
-  ippsDCTFwdInit_32f(
-      &ppDCTSpec, MEL_NUM_FILTERS, ippAlgHintNone, pDCTSpec, pDCTWorkBuf);
-  if (pDCTInitBuf)
-    ippFree(pDCTInitBuf);  // Этот уже сразу после инициализации не нужен
+    initialized = true;
 
-  // X. Скажем всем, что всё чики-пуки
-  initialized = true;
+    HANDLE hDbg = CreateFileW(L"C:\\Programs\\mhook\\opencode_dbg.txt", GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hDbg != INVALID_HANDLE_VALUE) {
+      SetFilePointer(hDbg, 0, NULL, FILE_END);
+      DWORD n;
+      WriteFile(hDbg, "IPP OK\n", 7, &n, NULL);
+      CloseHandle(hDbg);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    flag_ipp_broken = true;
+
+    HANDLE hDbg = CreateFileW(L"C:\\Programs\\mhook\\opencode_dbg.txt", GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hDbg != INVALID_HANDLE_VALUE) {
+      SetFilePointer(hDbg, 0, NULL, FILE_END);
+      DWORD n;
+      WriteFile(hDbg, "IPP CRASHED\n", 12, &n, NULL);
+      CloseHandle(hDbg);
+    }
+  }
 }
 
 //================================================================
@@ -453,7 +544,7 @@ void CopyShmopy::Halt() {
 void CopyShmopy::CS_mel_cep(float *mfspec, float *mfcep) {
   int i;
 
-  if (!initialized) Init();
+  if (!initialized && !flag_ipp_broken) Init();
 
   // 4.1 Логарифм
   for (i = 0; i < MEL_NUM_FILTERS; i++) {
@@ -465,15 +556,19 @@ void CopyShmopy::CS_mel_cep(float *mfspec, float *mfcep) {
   if (flag_sphinx_legacy) mfspec[0] /= 2.0f;
 
   // 4.2 DCT в тот же буфер
-  ippsDCTFwd_32f_I(mfspec, ppDCTSpec, pDCTWorkBuf);
+  if (flag_ipp_broken) {
+    fallback_dct(mfspec, MEL_NUM_FILTERS);
+  } else {
+    ippsDCTFwd_32f_I(mfspec, ppDCTSpec, pDCTWorkBuf);
+  }
 
   // 4.3 Копируем на выход только 13
   for (i = 0; i < MEL_NUM_CEPSTRA; i++) {
     mfcep[i] = mfspec[i];
     // Для legacy домножаем
     if (flag_sphinx_legacy) {
-      mfcep[i] /= sqrt(2.0 * MEL_NUM_FILTERS);
-      if (0 == i) mfcep[i] *= sqrt(2.0);
+      mfcep[i] /= sqrtf(2.0f * MEL_NUM_FILTERS);
+      if (0 == i) mfcep[i] *= sqrtf(2.0f);
     }
   }
 }
